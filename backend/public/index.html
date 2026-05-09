@@ -1,0 +1,836 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SQL Sentinel React Pro | Global Monitoring</title>
+    
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+    
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+
+    <style>
+        .modal-overlay {
+            position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0, 0, 0, 0.85); backdrop-filter: blur(10px);
+            display: flex; align-items: center; justify-content: center;
+            z-index: 1000; opacity: 0; visibility: hidden; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .modal-overlay.active { opacity: 1; visibility: visible; }
+        .modal-content {
+            background: var(--bg-card); border: 1px solid var(--border);
+            width: 100%; max-width: 500px; border-radius: 28px; padding: 40px;
+            transform: translateY(20px); transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+        }
+        .modal-overlay.active .modal-content { transform: translateY(0); }
+        .form-group input, .form-group select {
+            margin-top: 8px; font-size: 0.95rem; padding: 12px 16px;
+        }
+        .sidebar-action {
+            margin: 20px 0; padding: 14px; background: rgba(56, 189, 248, 0.08);
+            border: 1px dashed rgba(56, 189, 248, 0.4); border-radius: 16px;
+            color: var(--accent-primary); font-weight: 600; cursor: pointer;
+            display: flex; align-items: center; justify-content: center; gap: 10px;
+            transition: all 0.2s;
+        }
+        .sidebar-action:hover { background: rgba(56, 189, 248, 0.15); border-color: var(--accent-primary); transform: scale(1.02); }
+        .grid-full { grid-column: span 12; }
+        .grid-half { grid-column: span 6; }
+        .grid-third { grid-column: span 4; }
+        .server-row:hover { background: rgba(255, 255, 255, 0.05); }
+        .tab-menu { display: flex; gap: 8px; overflow-x: auto; margin-bottom: 24px; padding-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.1); }
+        .tab-btn { background: transparent; border: none; color: #94a3b8; font-weight: 600; padding: 10px 16px; cursor: pointer; border-radius: 6px; white-space: nowrap; transition: 0.2s; }
+        .tab-btn:hover { background: rgba(255,255,255,0.05); }
+        .tab-btn.active { background: rgba(56, 189, 248, 0.15); color: #38bdf8; }
+        .tab-btn.danger { color: #ef4444; }
+        .tab-btn.warning { color: #f59e0b; }
+    </style>
+</head>
+<body class="dark-theme">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        // UI Components
+        const Icon = ({ name, className, style }) => {
+            return <i data-lucide={name} className={className} style={style}></i>;
+        };
+
+        const StatCard = ({ label, value, subValue, icon, type, trend, trendValue, onClick, isActive }) => (
+            <div className={`stat-card ${isActive ? 'active' : ''}`} onClick={onClick} style={{ cursor: onClick ? 'pointer' : 'default', border: isActive ? '1px solid var(--accent-primary)' : '1px solid transparent', boxShadow: isActive ? '0 0 15px rgba(56, 189, 248, 0.15)' : 'none', transition: 'all 0.2s ease' }}>
+                <div className={`stat-icon ${type}`}><Icon name={icon} /></div>
+                <div className="stat-data">
+                    <span className="label" style={{color: isActive ? 'var(--text-primary)' : 'var(--text-muted)'}}>{label}</span>
+                    <h2 className={`value ${type === 'danger' ? 'color-danger' : type === 'warning' ? 'color-warning' : ''}`}>
+                        {value} {subValue && <span className="sub">/ {subValue}</span>}
+                    </h2>
+                    <span className={`trend ${trend}`}>
+                        <Icon name={trend === 'up' ? 'arrow-up-right' : trend === 'down' ? 'arrow-down-right' : 'minus'} /> 
+                        {trendValue}
+                    </span>
+                </div>
+            </div>
+        );
+
+        const ChartCard = ({ title, id, className, children }) => (
+            <div className={`card ${className}`}>
+                <div className="card-header"><h3>{title}</h3></div>
+                <div className="card-body">
+                    <div id={id}></div>
+                    {children}
+                </div>
+            </div>
+        );
+
+        const DYNAMIC_TABS = [
+            { id: 'active-queries', label: 'Active Queries', icon: 'activity', getValue: kpi => kpi ? kpi.activeQueries : '-', getTrend: kpi => kpi && kpi.blocked > 0 ? 'warning' : 'up', getTrendVal: kpi => kpi && kpi.blocked > 0 ? `${kpi.blocked} blocked` : 'Live' },
+            { id: 'waits', label: 'Wait Stats', icon: 'clock', getValue: kpi => kpi && kpi.blocked > 0 ? kpi.blocked : '0', getTrend: kpi => kpi && kpi.blocked > 0 ? 'warning' : 'up', getTrendVal: kpi => kpi && kpi.blocked > 0 ? 'Blocking' : 'Clear' },
+            { id: 'cpu', label: 'Top Queries', icon: 'cpu', getValue: () => 'CPU', getTrend: () => 'neutral', getTrendVal: () => 'Stats' },
+            { id: 'io', label: 'IO Stats', icon: 'hard-drive', getValue: () => 'IO', getTrend: () => 'neutral', getTrendVal: () => 'Throughput' },
+            { id: 'disks', label: 'Server Disks', icon: 'database', getValue: kpi => kpi && kpi.maxDiskUsed !== undefined ? `${Math.round(kpi.maxDiskUsed)}%` : 'Disk', getTrend: kpi => kpi && kpi.maxDiskUsed > 90 ? 'danger' : (kpi && kpi.maxDiskUsed > 80 ? 'warning' : 'up'), getTrendVal: kpi => kpi && kpi.maxDiskUsed > 90 ? 'Critical' : 'Storage' },
+            { id: 'memory', label: 'Memory', icon: 'box', getValue: () => 'RAM', getTrend: () => 'neutral', getTrendVal: () => 'Usage' },
+            { id: 'tempdb', label: 'TempDB', icon: 'database', getValue: kpi => kpi ? `${Math.round(kpi.tempdbPercent)}%` : '-', getTrend: kpi => kpi && kpi.tempdbPercent > 80 ? 'danger' : (kpi && kpi.tempdbPercent > 65 ? 'warning' : 'up'), getTrendVal: kpi => kpi && kpi.tempdbPercent > 80 ? 'Critical' : 'Normal' },
+            { id: 'indexes', label: 'Indexes', icon: 'list', getValue: () => 'Idx', getTrend: () => 'neutral', getTrendVal: () => 'Frag' },
+            { id: 'capacity', label: 'Databases', icon: 'layers', getValue: () => 'DBs', getTrend: () => 'neutral', getTrendVal: () => 'Sizes' },
+            { id: 'backups', label: 'Backups', icon: 'save', getValue: () => 'Bkp', getTrend: () => 'neutral', getTrendVal: () => 'Status' },
+            { id: 'alwayson', label: 'AlwaysOn', icon: 'link', getValue: () => 'AG', getTrend: () => 'neutral', getTrendVal: () => 'Sync' },
+            { id: 'jobs', label: 'Agent Jobs', icon: 'calendar', getValue: kpi => kpi ? kpi.failedJobs : '-', getTrend: kpi => kpi && kpi.failedJobs > 0 ? 'danger' : 'up', getTrendVal: kpi => kpi && kpi.failedJobs > 0 ? 'Failed' : 'All Good' },
+            { id: 'security', label: 'Logins', icon: 'shield', getValue: () => 'Sec', getTrend: () => 'neutral', getTrendVal: () => 'Audit' },
+            { id: 'custom-alerts', label: 'Custom Alerts', icon: 'bell', getValue: kpi => kpi && kpi.hasCustomAlerts ? 'Alert' : '0', getTrend: kpi => kpi && kpi.hasCustomAlerts ? 'danger' : 'up', getTrendVal: kpi => kpi && kpi.hasCustomAlerts ? 'Active' : 'Clear' },
+            { id: 'settings', label: 'Settings', icon: 'settings', getValue: () => 'Cfg', getTrend: () => 'neutral', getTrendVal: () => 'Toggles' }
+        ];
+
+        const DynamicTable = ({ data }) => {
+            if (!data) return <p>Loading...</p>;
+            if (data.error) return <div style={{color:'var(--danger)', padding: '20px', textAlign: 'center'}}><strong>Error:</strong> {data.details || data.error}</div>;
+            if (data.length === 0) return <div style={{padding:'20px', textAlign:'center'}}>No data found.</div>;
+            
+            const columns = Object.keys(data[0]);
+            
+            return (
+                <div style={{overflowX: 'auto'}}>
+                    <table className="risk-table">
+                        <thead><tr>{columns.map(c => <th key={c} style={{textTransform:'capitalize'}}>{c.replace(/_/g, ' ')}</th>)}</tr></thead>
+                        <tbody>
+                            {data.map((row, i) => (
+                                <tr key={i}>
+                                    {columns.map(c => (
+                                        <td key={c} style={{maxWidth:'300px', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis'}} title={row[c] !== null ? String(row[c]) : ''}>
+                                            {row[c] !== null ? String(row[c]) : '-'}
+                                        </td>
+                                    ))}
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+            );
+        };
+
+        const SettingsTab = ({ server }) => {
+            const [disabled, setDisabled] = useState((server.DisabledFeatures || '').split(',').filter(x => x));
+            const [thresholds, setThresholds] = useState({ MaxCpuPercent: 80, MaxTempDbPercent: 80, MaxBlockedProcesses: 5, MaxFailedJobs: 0, MaxDiskPercent: 80, CritDiskPercent: 90 });
+            const [saveStatus, setSaveStatus] = useState('');
+
+            useEffect(() => {
+                fetch(`/api/servers/${server.Id}/thresholds`).then(r => r.json()).then(setThresholds);
+            }, [server.Id]);
+            
+            const toggleFeature = async (id) => {
+                const newDisabled = disabled.includes(id) ? disabled.filter(x => x !== id) : [...disabled, id];
+                setDisabled(newDisabled);
+                await fetch(`/api/servers/${server.Id}/settings`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ DisabledFeatures: newDisabled.join(',') })
+                });
+                server.DisabledFeatures = newDisabled.join(',');
+            };
+
+            const saveThresholds = async (e) => {
+                e.preventDefault();
+                setSaveStatus('Saving...');
+                const res = await fetch(`/api/servers/${server.Id}/thresholds`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(thresholds)
+                });
+                if (res.ok) setSaveStatus('Saved Successfully!');
+                else setSaveStatus('Failed to save.');
+                setTimeout(() => setSaveStatus(''), 3000);
+            };
+
+            return (
+                <div style={{padding:'20px', display:'grid', gridTemplateColumns:'1fr 1fr', gap:'40px'}}>
+                    <div>
+                        <h4 style={{marginBottom:'16px', display:'flex', alignItems:'center', gap:'8px'}}><Icon name="sliders" /> Threshold Management</h4>
+                        <form onSubmit={saveThresholds} style={{display:'flex', flexDirection:'column', gap:'16px'}}>
+                            <div className="form-group">
+                                <label>CPU WARNING (%)</label>
+                                <input type="number" value={thresholds.MaxCpuPercent} onChange={e => setThresholds({...thresholds, MaxCpuPercent: parseInt(e.target.value)})} />
+                            </div>
+                            <div className="form-group">
+                                <label>TEMPDB WARNING (%)</label>
+                                <input type="number" value={thresholds.MaxTempDbPercent} onChange={e => setThresholds({...thresholds, MaxTempDbPercent: parseInt(e.target.value)})} />
+                            </div>
+                            <div className="form-group">
+                                <label>BLOCKED PROCESSES LIMIT</label>
+                                <input type="number" value={thresholds.MaxBlockedProcesses} onChange={e => setThresholds({...thresholds, MaxBlockedProcesses: parseInt(e.target.value)})} />
+                            </div>
+                            <div className="form-group">
+                                <label>FAILED JOBS LIMIT</label>
+                                <input type="number" value={thresholds.MaxFailedJobs} onChange={e => setThresholds({...thresholds, MaxFailedJobs: parseInt(e.target.value)})} />
+                            </div>
+                            <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:'12px'}}>
+                                <div className="form-group">
+                                    <label>DISK WARNING (%)</label>
+                                    <input type="number" value={thresholds.MaxDiskPercent} onChange={e => setThresholds({...thresholds, MaxDiskPercent: parseInt(e.target.value)})} />
+                                </div>
+                                <div className="form-group">
+                                    <label>DISK CRITICAL (%)</label>
+                                    <input type="number" value={thresholds.CritDiskPercent} onChange={e => setThresholds({...thresholds, CritDiskPercent: parseInt(e.target.value)})} />
+                                </div>
+                            </div>
+                            <button type="submit" className="btn-primary" style={{marginTop:'10px'}}>Save All Thresholds</button>
+                            {saveStatus && <p style={{fontSize:'0.85rem', color: saveStatus.includes('Success') ? 'var(--accent-primary)' : 'var(--danger)'}}>{saveStatus}</p>}
+                        </form>
+                    </div>
+
+                    <div>
+                        <h4 style={{marginBottom:'16px', display:'flex', alignItems:'center', gap:'8px'}}><Icon name="toggle-left" /> Feature Toggles</h4>
+                        <p style={{color:'var(--text-muted)', marginBottom:'16px', fontSize:'0.85rem'}}>Select which tabs should be visible for this server.</p>
+                        <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:'12px'}}>
+                            {DYNAMIC_TABS.filter(t => !['settings', 'custom-alerts'].includes(t.id)).map(t => (
+                                <label key={t.id} style={{display:'flex', alignItems:'center', gap:'8px', cursor:'pointer', background:'rgba(255,255,255,0.03)', padding:'10px', borderRadius:'8px', border:'1px solid rgba(255,255,255,0.05)'}}>
+                                    <input type="checkbox" checked={!disabled.includes(t.id)} onChange={() => toggleFeature(t.id)} />
+                                    <span style={{fontSize:'0.9rem'}}>{t.label}</span>
+                                </label>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const CustomAlertsTab = ({ server, alerts, setAlerts }) => {
+            const [newAlert, setNewAlert] = useState({ AlertName: '', QueryText: 'SELECT COUNT(*) as Value FROM ', WarningThreshold: 10, CriticalThreshold: 20, ComparisonType: '>' });
+
+            const addAlert = async () => {
+                if(!newAlert.AlertName) return;
+                await fetch(`/api/servers/${server.Id}/custom-alerts`, {
+                    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(newAlert)
+                });
+                const res = await fetch(`/api/servers/${server.Id}/custom-alerts/live`);
+                setAlerts(await res.json());
+                setNewAlert({ AlertName: '', QueryText: 'SELECT COUNT(*) as Value FROM ', WarningThreshold: 10, CriticalThreshold: 20, ComparisonType: '>' });
+            };
+
+            const delAlert = async (id) => {
+                await fetch(`/api/servers/${server.Id}/custom-alerts/${id}`, { method: 'DELETE' });
+                setAlerts(alerts.filter(a => a.Id !== id));
+            };
+
+            return (
+                <div style={{padding:'20px'}}>
+                    <div style={{background:'rgba(255,255,255,0.05)', padding:'16px', borderRadius:'8px', marginBottom:'24px'}}>
+                        <h4>Add New Custom Alert</h4>
+                        <p style={{color:'var(--text-muted)', fontSize:'0.85rem', marginBottom:'12px'}}>Your query must return a single numeric value in the first column.</p>
+                        <div style={{display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:'12px'}}>
+                            <input className="input-field" placeholder="Alert Name (e.g., Errored Orders)" value={newAlert.AlertName} onChange={e => setNewAlert({...newAlert, AlertName: e.target.value})} />
+                            <input className="input-field" placeholder="Warning Limit" type="number" value={newAlert.WarningThreshold} onChange={e => setNewAlert({...newAlert, WarningThreshold: parseFloat(e.target.value)})} />
+                            <input className="input-field" placeholder="Critical Limit" type="number" value={newAlert.CriticalThreshold} onChange={e => setNewAlert({...newAlert, CriticalThreshold: parseFloat(e.target.value)})} />
+                            <textarea className="input-field" style={{gridColumn:'span 3', minHeight:'60px'}} value={newAlert.QueryText} onChange={e => setNewAlert({...newAlert, QueryText: e.target.value})}></textarea>
+                            <select className="input-field" value={newAlert.ComparisonType} onChange={e => setNewAlert({...newAlert, ComparisonType: e.target.value})}>
+                                <option value=">">Greater than (&gt;)</option>
+                                <option value="<">Less than (&lt;)</option>
+                                <option value="=">Equals (=)</option>
+                            </select>
+                            <button className="btn-primary" onClick={addAlert} style={{gridColumn:'span 2'}}>Save Alert</button>
+                        </div>
+                    </div>
+
+                    {alerts.length > 0 && (
+                        <div>
+                            <h4 style={{marginBottom:'16px'}}>Active Custom Alerts</h4>
+                            <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(220px, 1fr))', gap:'16px'}}>
+                                {alerts.map(a => (
+                                    <div key={a.Id} style={{position:'relative'}}>
+                                        <StatCard 
+                                            label={a.AlertName}
+                                            value={a.liveValue !== null ? a.liveValue : '-'}
+                                            icon="bell"
+                                            type={a.status === 'danger' ? 'danger' : a.status === 'warning' ? 'warning' : 'primary'}
+                                            trend={a.status === 'danger' ? 'danger' : a.status === 'warning' ? 'warning' : 'up'}
+                                            trendValue={`Limit: ${a.ComparisonType}${a.CriticalThreshold}`}
+                                        />
+                                        <button className="action-btn" onClick={() => delAlert(a.Id)} style={{position:'absolute', top:'10px', right:'10px', color:'var(--danger)', opacity: 0.7, padding: '4px'}}>
+                                            <Icon name="trash-2" style={{width:'16px', height:'16px'}} />
+                                        </button>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        const ServerDetailDashboard = ({ server, kpi, onBack }) => {
+            const [activeTab, setActiveTab] = useState('active-queries');
+            const [tabData, setTabData] = useState({});
+            const [loading, setLoading] = useState(false);
+            const [liveAlerts, setLiveAlerts] = useState([]);
+
+            useEffect(() => {
+                fetch(`/api/servers/${server.Id}/custom-alerts/live`).then(r => r.json()).then(setLiveAlerts);
+            }, [server.Id]);
+
+            useEffect(() => {
+                setTimeout(() => lucide.createIcons(), 100);
+            }, [server, activeTab, liveAlerts]);
+
+            useEffect(() => {
+                const fetchData = async () => {
+                    if (['settings', 'custom-alerts'].includes(activeTab) || activeTab.startsWith('ca-')) return;
+                    if (tabData[activeTab]) return;
+                    setLoading(true);
+                    try {
+                        const res = await fetch(`/api/servers/${server.Id}/dmv/${activeTab}`);
+                        const data = await res.json();
+                        setTabData(prev => ({ ...prev, [activeTab]: data }));
+                    } catch(e) {
+                        setTabData(prev => ({ ...prev, [activeTab]: { error: e.message } }));
+                    }
+                    setLoading(false);
+                };
+                fetchData();
+            }, [server, activeTab]);
+
+            const renderCustomActiveQueries = (dmvData) => {
+                if (!dmvData) return null;
+                if (dmvData.error) return <div style={{color:'var(--danger)', padding: '20px', textAlign: 'center'}}><strong>Error:</strong> {dmvData.details || dmvData.error}</div>;
+                if (!Array.isArray(dmvData) || dmvData.length === 0) return <div style={{textAlign: 'center', padding: '20px'}}>No active queries found.</div>;
+
+                return (
+                    <table className="risk-table">
+                        <thead>
+                            <tr>
+                                <th>SPID</th>
+                                <th>Login (Host)</th>
+                                <th>Client IP</th>
+                                <th>Status</th>
+                                <th>Wait & CPU</th>
+                                <th>SQL Text & Input Buffer</th>
+                                <th>Query Plan</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {dmvData.map((row, i) => (
+                                <tr key={i}>
+                                    <td>{row.session_id}</td>
+                                    <td><strong>{row.login_name}</strong><br/><small style={{color: 'var(--text-muted)'}}>{row.host_name}</small></td>
+                                    <td><span className="badge" style={{background: 'rgba(255,255,255,0.05)'}}>{row.client_net_address || 'N/A'}</span></td>
+                                    <td><span className={`badge ${row.status === 'running' ? 'prod' : ''}`}>{row.status}</span></td>
+                                    <td>
+                                        {row.wait_type ? <span style={{color: 'var(--warning)', display:'block', fontSize:'0.8rem'}}>{row.wait_type}</span> : null}
+                                        <span style={{fontSize:'0.85rem'}}>{row.cpu_time} ms</span>
+                                    </td>
+                                    <td style={{maxWidth:'400px'}}>
+                                        <div style={{whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis', fontWeight:'600', color: 'var(--accent-primary)'}} title={row.sql_text}>{row.sql_text || row.command}</div>
+                                        <div style={{whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis', fontSize:'0.8rem', color: 'var(--text-muted)', marginTop:'4px'}} title={row.input_buffer}>{row.input_buffer || '-'}</div>
+                                    </td>
+                                    <td>{row.query_plan ? <button className="badge" onClick={() => alert('Query Plan XML is available.')}>View XML</button> : <span style={{color:'var(--text-muted)'}}>-</span>}</td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                );
+            };
+
+            return (
+                <main className="main-content">
+                    <header className="top-header">
+                        <div className="header-title" style={{display:'flex', alignItems:'center', gap:'16px'}}>
+                            <button className="action-btn" onClick={onBack}><Icon name="arrow-left" /></button>
+                            <div>
+                                <h1>{server.Alias || server.ServerName}</h1>
+                                <p>Detailed Instance Metrics</p>
+                            </div>
+                        </div>
+                    </header>
+                    
+                    {liveAlerts.filter(a => a.status !== 'primary').length > 0 && (
+                        <div style={{marginBottom: '24px', display:'flex', gap:'12px', overflowX:'auto', padding:'4px'}}>
+                            {liveAlerts.filter(a => a.status !== 'primary').map(a => (
+                                <div key={a.Id} className={`stat-card active ${a.status}`} style={{flex:'0 0 200px', padding:'12px', border: a.status === 'danger' ? '1px solid var(--danger)' : '1px solid var(--warning)'}}>
+                                    <div style={{display:'flex', alignItems:'center', gap:'8px', marginBottom:'4px'}}>
+                                        <Icon name="bell" style={{width:14}} />
+                                        <span style={{fontSize:'0.75rem', fontWeight:'bold'}}>{a.AlertName}</span>
+                                    </div>
+                                    <div style={{fontSize:'1.2rem', fontWeight:'700'}}>{a.liveValue}</div>
+                                    <div style={{fontSize:'0.7rem', opacity:0.7}}>{a.status.toUpperCase()} Threshold Triggered</div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+
+                    <div className="tabs-grid" style={{display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(220px, 1fr))', gap:'16px', marginBottom:'24px'}}>
+                        {DYNAMIC_TABS.filter(t => !(server.DisabledFeatures || '').includes(t.id)).map(t => {
+                            const trend = t.getTrend(kpi);
+                            const type = trend === 'danger' ? 'danger' : trend === 'warning' ? 'warning' : 'primary';
+                            return (
+                                <StatCard 
+                                    key={t.id}
+                                    label={t.label}
+                                    value={t.getValue(kpi)}
+                                    icon={t.icon}
+                                    type={type}
+                                    trend={trend}
+                                    trendValue={t.getTrendVal(kpi)}
+                                    isActive={activeTab === t.id}
+                                    onClick={() => setActiveTab(t.id)}
+                                />
+                            );
+                        })}
+                    </div>
+
+                    <div className="card grid-full">
+                        <div className="card-header">
+                            <h3>{DYNAMIC_TABS.find(t => t.id === activeTab)?.label}</h3>
+                        </div>
+                        <div className="card-body" style={{overflowX: 'auto'}}>
+                            {activeTab === 'settings' ? <SettingsTab server={server} /> :
+                             activeTab === 'custom-alerts' ? <CustomAlertsTab server={server} alerts={liveAlerts} setAlerts={setLiveAlerts} /> :
+                             loading && !tabData[activeTab] ? <p>Loading DMV data...</p> : 
+                             activeTab === 'active-queries' ? renderCustomActiveQueries(tabData['active-queries']) : 
+                             <DynamicTable data={tabData[activeTab]} />}
+                        </div>
+                    </div>
+                </main>
+            );
+        };
+
+        const ServerWizard = ({ data, lookups, onSave, onChange, onDelete }) => {
+            const [activeTab, setActiveTab] = useState('basic');
+            const tabs = [
+                { id: 'basic', label: 'Basic Info' },
+                { id: 'classification', label: 'Classification' },
+                { id: 'connection', label: 'Connection' },
+                { id: 'monitoring', label: 'Monitoring' }
+            ];
+
+            return (
+                <div className="server-wizard">
+                    <div className="modal-tabs">
+                        {tabs.map(t => (
+                            <button key={t.id} type="button" className={`modal-tab-btn ${activeTab === t.id ? 'active' : ''}`} onClick={() => setActiveTab(t.id)}>
+                                {t.label}
+                            </button>
+                        ))}
+                    </div>
+
+                    <form onSubmit={onSave}>
+                        {activeTab === 'basic' && (
+                            <div className="tab-content">
+                                <div className="form-group">
+                                    <label>SERVER / INSTANCE NAME (Required)</label>
+                                    <input type="text" placeholder="e.g. SQLSRV01 or SQLSRV01\INST01" required 
+                                        value={data.serverName || ''} onChange={e => onChange({...data, serverName: e.target.value})} />
+                                </div>
+                                <div className="form-group">
+                                    <label>ALIAS (Okunabilir Ad)</label>
+                                    <input type="text" placeholder="e.g. Param Prod Primary" required 
+                                        value={data.alias || ''} onChange={e => onChange({...data, alias: e.target.value})} />
+                                </div>
+                                <div className="form-group">
+                                    <label style={{display:'flex', alignItems:'center', gap:'8px', cursor:'pointer', marginTop:'10px'}}>
+                                        <input type="checkbox" checked={data.isActive} onChange={e => onChange({...data, isActive: e.target.checked})} />
+                                        Monitoring Active
+                                    </label>
+                                </div>
+                            </div>
+                        )}
+
+                        {activeTab === 'classification' && (
+                            <div className="tab-content">
+                                <div className="form-row">
+                                    <div className="form-group">
+                                        <label>ENVIRONMENT</label>
+                                        <select value={data.environment} onChange={e => onChange({...data, environment: e.target.value})}>
+                                            {lookups.environments.map(en => <option key={en.Id} value={en.Name}>{en.Name}</option>)}
+                                        </select>
+                                    </div>
+                                    <div className="form-group">
+                                        <label>CRITICALITY</label>
+                                        <select value={data.criticality} onChange={e => onChange({...data, criticality: e.target.value})}>
+                                            {lookups.criticality.map(c => <option key={c.Id} value={c.Name}>{c.Name}</option>)}
+                                        </select>
+                                    </div>
+                                </div>
+                                <div className="form-row">
+                                    <div className="form-group">
+                                        <label>LOCATION</label>
+                                        <select value={data.location} onChange={e => onChange({...data, location: e.target.value})}>
+                                            {lookups.locations.map(l => <option key={l.Id} value={l.Name}>{l.Name}</option>)}
+                                        </select>
+                                    </div>
+                                    <div className="form-group">
+                                        <label>ROLE</label>
+                                        <select value={data.role} onChange={e => onChange({...data, role: e.target.value})}>
+                                            {lookups.roles.map(r => <option key={r.Id} value={r.Name}>{r.Name}</option>)}
+                                        </select>
+                                    </div>
+                                </div>
+                                <div className="form-group">
+                                    <label>GROUPS / LABELS</label>
+                                    <div className="multi-select-grid">
+                                        {lookups.groups.map(g => (
+                                            <label key={g.Id} className="checkbox-item">
+                                                <input type="checkbox" /> {g.Name}
+                                            </label>
+                                        ))}
+                                        {lookups.groups.length === 0 && <p style={{fontSize:'0.8rem', color:'var(--text-muted)'}}>No groups defined yet.</p>}
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
+                        {activeTab === 'connection' && (
+                            <div className="tab-content">
+                                <div className="form-group">
+                                    <label>AUTHENTICATION TYPE</label>
+                                    <select value={data.authType} onChange={e => onChange({...data, authType: e.target.value})}>
+                                        <option value="SQL">SQL Authentication</option>
+                                        <option value="Windows">Windows Authentication</option>
+                                    </select>
+                                </div>
+                                <div className="form-row">
+                                    <div className="form-group">
+                                        <label>USERNAME</label>
+                                        <input type="text" value={data.username || ''} onChange={e => onChange({...data, username: e.target.value})} disabled={data.authType === 'Windows'} />
+                                    </div>
+                                    <div className="form-group">
+                                        <label>PASSWORD</label>
+                                        <input type="password" value={data.password || ''} onChange={e => onChange({...data, password: e.target.value})} disabled={data.authType === 'Windows'} />
+                                    </div>
+                                </div>
+                                <div className="form-row">
+                                    <div className="form-group">
+                                        <label style={{display:'flex', alignItems:'center', gap:'8px'}}>
+                                            <input type="checkbox" checked={data.encrypt} onChange={e => onChange({...data, encrypt: e.target.checked})} /> Encrypt
+                                        </label>
+                                    </div>
+                                    <div className="form-group">
+                                        <label style={{display:'flex', alignItems:'center', gap:'8px'}}>
+                                            <input type="checkbox" checked={data.trustCert} onChange={e => onChange({...data, trustCert: e.target.checked})} /> Trust Certificate
+                                        </label>
+                                    </div>
+                                </div>
+                                <div className="form-group">
+                                    <label>CONNECTION STRING (LEGACY OVERRIDE)</label>
+                                    <input type="text" value={data.connectionString || ''} onChange={e => onChange({...data, connectionString: e.target.value})} placeholder="Provider=...;" />
+                                </div>
+                            </div>
+                        )}
+
+                        {activeTab === 'monitoring' && (
+                            <div className="tab-content">
+                                <label>SELECT METRICS TO TRACK</label>
+                                <div className="multi-select-grid" style={{marginTop:'12px'}}>
+                                    {lookups.monitoring.map(m => (
+                                        <label key={m.Id} className="checkbox-item">
+                                            <input type="checkbox" defaultChecked /> {m.Name}
+                                        </label>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        <div style={{marginTop:'32px', display:'flex', gap:'12px'}}>
+                            <button type="submit" className="add-server-btn" style={{margin:0, flex: 2}}>
+                                {data.Id ? 'Update Configuration' : 'Start Monitoring'}
+                            </button>
+                            {data.Id && (
+                                <button type="button" className="action-btn" style={{width:'auto', padding:'0 20px', borderRadius:'8px', color:'var(--danger)', border:'1px solid var(--danger)'}} onClick={() => onDelete(data.Id)}>
+                                    <Icon name="trash-2" />
+                                </button>
+                            )}
+                        </div>
+                    </form>
+                </div>
+            );
+        };
+
+        const GlobalDashboard = ({ servers, kpiData, globalStats, onServerClick, onEditServer, quickFilter, setQuickFilter }) => {
+            useEffect(() => {
+                setTimeout(() => lucide.createIcons(), 100);
+            }, [servers, kpiData, quickFilter]);
+
+            return (
+                <main className="main-content">
+                    <header className="top-header">
+                        <div className="header-title">
+                            <h1>Global Dashboard</h1>
+                            <p>Operational overview of {servers.length} instances</p>
+                        </div>
+                        <div className="quick-filters" style={{marginBottom: 0, marginLeft: '40px', flex: 1}}>
+                            {['All', 'PROD', 'DR', 'TEST', 'Critical'].map(f => (
+                                <button key={f} className={`qf-btn ${quickFilter === f ? 'active' : ''}`} onClick={() => setQuickFilter(f)}>{f}</button>
+                            ))}
+                        </div>
+                        <div className="header-actions">
+                            <button className="action-btn"><Icon name="bell" /></button>
+                            <div className="avatar">MU</div>
+                        </div>
+                    </header>
+
+                    <section className="stats-grid">
+                        <StatCard label="Total Registered" value={servers.length} icon="server" type="info" trend="up" trendValue="Live" />
+                        <StatCard label="Critical Alarms" value={globalStats.critical} icon="alert-circle" type="danger" trend="up" trendValue="Active" />
+                        <StatCard label="Custom Alerts" value={globalStats.customAlerts} icon="bell" type={globalStats.customAlerts > 0 ? 'danger' : 'info'} trend={globalStats.customAlerts > 0 ? 'danger' : 'up'} trendValue="Active" />
+                        <StatCard label="Failed Jobs" value={globalStats.failedJobs} icon="activity" type="danger" trend="up" trendValue="24h" />
+                    </section>
+
+                    <div className="server-card-grid">
+                        {servers.filter(s => {
+                            if (quickFilter === 'All') return true;
+                            if (quickFilter === 'Critical') return (s.Criticality || '').toLowerCase() === 'critical';
+                            if (quickFilter === 'Warning') return (s.Criticality || '').toLowerCase() === 'high' || (s.Criticality || '').toLowerCase() === 'medium';
+                            
+                            // Dynamic lookup match (Environment or Location)
+                            return (s.Environment === quickFilter || s.Location === quickFilter);
+                        }).map(s => {
+                            const kpi = kpiData[s.Id] || { activeQueries: 0, tempdbPercent: 0, failedJobs: 0, blocked: 0 };
+                            let stateScore = 100 - (kpi.failedJobs * 20) - (kpi.blocked * 10) - (kpi.tempdbPercent > 80 ? 30 : 0);
+                            if (stateScore < 0) stateScore = 0;
+                            
+                            return (
+                                <div key={s.Id} className={`server-mini-card ${s.Criticality === 'Critical' ? 'critical-border' : ''}`} onClick={() => onServerClick(s)}>
+                                    <div style={{display:'flex', justifyContent:'space-between', marginBottom:'12px'}}>
+                                        <div>
+                                            <h3 style={{fontSize:'1.1rem'}}>{s.Alias || s.ServerName}</h3>
+                                            <p style={{fontSize:'0.75rem', color:'var(--text-muted)'}}>{s.ServerName}</p>
+                                        </div>
+                                        <span className={`badge ${(s.Environment || 'PROD').toLowerCase()}`}>{s.Environment || 'PROD'}</span>
+                                    </div>
+                                    
+                                    <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px', marginBottom:'16px'}}>
+                                        <div style={{fontSize:'0.75rem'}}><Icon name="map-pin" style={{width:12}}/> {s.Location || 'Local'}</div>
+                                        <div style={{fontSize:'0.75rem'}}><Icon name="shield" style={{width:12}}/> {s.Criticality || 'Medium'}</div>
+                                        <div style={{fontSize:'0.75rem'}}><Icon name="cpu" style={{width:12}}/> {s.ServerRole || 'Standalone'}</div>
+                                        <div style={{fontSize:'0.75rem'}}><Icon name="activity" style={{width:12}}/> Score: <span style={{color: stateScore < 70 ? 'var(--danger)' : 'var(--success)', fontWeight:'bold'}}>{stateScore}</span></div>
+                                    </div>
+
+                                    <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', paddingTop:'12px', borderTop:'1px solid var(--border)'}}>
+                                        <div style={{display:'flex', gap:'8px'}}>
+                                            {kpi.blocked > 0 && <Icon name="slash" style={{color:'var(--danger)', width:16}} title="Blocking detected" />}
+                                            {kpi.failedJobs > 0 && <Icon name="alert-circle" style={{color:'var(--danger)', width:16}} title="Failed jobs detected" />}
+                                            {kpi.hasCustomAlerts && <span className="badge danger" style={{fontSize:'0.6rem', padding:'2px 6px'}}>Alert</span>}
+                                        </div>
+                                        <button className="action-btn" style={{width:32, height:32}} onClick={(e) => { e.stopPropagation(); onEditServer(s); }}><Icon name="settings" style={{width:16}}/></button>
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                </main>
+            );
+        };
+
+        function App() {
+            const [isModalOpen, setIsModalOpen] = useState(false);
+            const [editServer, setEditServer] = useState(null);
+            const [servers, setServers] = useState([]);
+            const [kpiData, setKpiData] = useState({});
+            const [selectedServer, setSelectedServer] = useState(null);
+            const [quickFilter, setQuickFilter] = useState('All');
+            const [lookups, setLookups] = useState({ environments: [], roles: [], locations: [], criticality: [], groups: [], monitoring: [] });
+
+            const defaultNewServer = { 
+                serverName: '', alias: '', environment: 'PROD', role: 'Standalone', location: 'Local', criticality: 'Medium', 
+                authType: 'SQL', username: '', password: '', encrypt: false, trustCert: true, connTimeout: 15, queryTimeout: 30,
+                isActive: true, connectionString: '' 
+            };
+            const [newServer, setNewServer] = useState(defaultNewServer);
+
+            const fetchServers = async () => {
+                try {
+                    const res = await fetch('/api/servers');
+                    const data = await res.json();
+                    setServers(data);
+                    for (const server of data) {
+                        if (!kpiData[server.Id]) fetchKpi(server.Id);
+                    }
+                } catch (err) {
+                    console.error('Failed to fetch servers:', err);
+                }
+            };
+
+            const fetchLookups = async () => {
+                const cats = ['environments', 'roles', 'locations', 'criticality', 'groups', 'monitoring'];
+                const results = {};
+                for (const cat of cats) {
+                    const res = await fetch(`/api/lookups/${cat}`);
+                    results[cat] = await res.json();
+                }
+                setLookups(results);
+            };
+
+            const fetchKpi = async (id) => {
+                try {
+                    const res = await fetch(`/api/servers/${id}/kpi-summary`);
+                    const data = await res.json();
+                    setKpiData(prev => ({...prev, [id]: data}));
+                } catch (err) {
+                    console.error('Failed KPI for ' + id);
+                }
+            };
+
+            useEffect(() => {
+                fetchServers();
+                fetchLookups();
+                const interval = setInterval(() => {
+                    fetchServers();
+                }, 10000);
+                return () => clearInterval(interval);
+            }, []);
+
+            const getGlobalStats = () => {
+                let critical = 0;
+                let warning = 0;
+                let failedJobs = 0;
+                let customAlerts = 0;
+                Object.values(kpiData).forEach(kpi => {
+                    if (!kpi || kpi.error) return;
+                    if ((kpi.failedJobs || 0) > 0 || (kpi.tempdbPercent || 0) > 85) critical++;
+                    else if ((kpi.blocked || 0) > 0 || (kpi.tempdbPercent || 0) > 65) warning++;
+                    if (kpi.hasCustomAlerts) customAlerts++;
+                    failedJobs += (kpi.failedJobs || 0);
+                });
+                return { critical, warning, failedJobs, customAlerts };
+            };
+            const globalStats = getGlobalStats();
+
+            const handleAddServer = async (e) => {
+                e.preventDefault();
+                try {
+                    const res = await fetch('/api/servers', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(newServer)
+                    });
+                    if (res.ok) {
+                        fetchServers();
+                        setIsModalOpen(false);
+                        setNewServer(defaultNewServer);
+                    } else {
+                        const err = await res.json();
+                        alert('Error: ' + err.details);
+                    }
+                } catch(err) { console.error(err); }
+            };
+
+            const handleUpdateServer = async (e) => {
+                e.preventDefault();
+                try {
+                    const res = await fetch('/api/servers/' + editServer.Id, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(editServer)
+                    });
+                    if (res.ok) {
+                        fetchServers();
+                        setEditServer(null);
+                    } else { alert('Update failed.'); }
+                } catch(err) { console.error(err); }
+            };
+
+            const handleDeleteServer = async (id) => {
+                if (!confirm('Are you sure you want to delete this server?')) return;
+                try {
+                    const res = await fetch('/api/servers/' + id, { method: 'DELETE' });
+                    if (res.ok) { fetchServers(); setEditServer(null); setIsModalOpen(false); }
+                } catch(err) { console.error(err); }
+            };
+
+            return (
+                <div className="app-container">
+                    <aside className="sidebar">
+                        <div className="logo">
+                            <Icon name="database" className="logo-icon" />
+                            <span className="logo-text">SQL<span>SENTINEL</span></span>
+                        </div>
+                        
+                        <div className="sidebar-action" onClick={() => setIsModalOpen(true)}>
+                            <Icon name="plus-circle" /> Add New Server
+                        </div>
+
+                        <div className="filter-group">
+                            <label>ENVIRONMENT</label>
+                            <select onChange={e => setQuickFilter(e.target.value)} value={quickFilter}>
+                                <option value="All">All Environments</option>
+                                {lookups.environments.map(e => <option key={e.Id} value={e.Name}>{e.Name}</option>)}
+                            </select>
+                        </div>
+                        
+                        <div className="filter-group">
+                            <label>LOCATION</label>
+                            <select onChange={e => setQuickFilter(e.target.value)} value={quickFilter}>
+                                <option value="All">All Locations</option>
+                                {lookups.locations.map(l => <option key={l.Id} value={l.Name}>{l.Name}</option>)}
+                            </select>
+                        </div>
+
+                        <div className="filter-group">
+                            <label>CRITICALITY</label>
+                            <div className="severity-filters">
+                                <button className={`sev-btn critical ${quickFilter === 'Critical' ? 'active' : ''}`} onClick={() => setQuickFilter('Critical')}>Crit</button>
+                                <button className={`sev-btn warning ${quickFilter === 'Warning' ? 'active' : ''}`} onClick={() => setQuickFilter('Warning')}>Warn</button>
+                            </div>
+                        </div>
+
+                        <div className="sidebar-footer">
+                            <p>System Version: 3.0.0-pro</p>
+                        </div>
+                    </aside>
+
+                    {selectedServer ? 
+                        <ServerDetailDashboard server={selectedServer} kpi={kpiData[selectedServer.Id]} onBack={() => setSelectedServer(null)} /> : 
+                        <GlobalDashboard servers={servers} kpiData={kpiData} globalStats={globalStats} onServerClick={setSelectedServer} onEditServer={setEditServer} quickFilter={quickFilter} setQuickFilter={setQuickFilter} />
+                    }
+
+                    {(isModalOpen || editServer) && (
+                        <div className="modal-overlay active">
+                            <div className="modal-content" style={{maxWidth:'800px', width:'90%'}}>
+                                <div className="modal-header">
+                                    <h2>{editServer ? 'Edit Server' : 'Register New Server'}</h2>
+                                    <button className="action-btn" onClick={() => { setIsModalOpen(false); setEditServer(null); }}><Icon name="x" /></button>
+                                </div>
+                                <ServerWizard 
+                                    data={editServer || newServer} 
+                                    lookups={lookups}
+                                    onSave={editServer ? handleUpdateServer : handleAddServer}
+                                    onChange={editServer ? setEditServer : setNewServer}
+                                    onDelete={handleDeleteServer}
+                                />
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>

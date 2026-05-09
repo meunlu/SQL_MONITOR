@@ -1,0 +1,9 @@
+1-ne kadar da bir refresh ediyor
+2-instance ları edit edebilmeliyim ve keni vereceğim isim ile kaydedebilmeliyim.
+3-ana ekranda bulunan kpı alanlarını da güncellensin
+4-disk alanlarını da kontrol etsin
+5-errorlog ları da kontrol etsin
+6-ana ekran registered serverları özellikleirne göre filtreleyebilmeliyim
+-versiyon
+-dr prod sunucu
+buna göre de filtrelenmiş sunucular ekranda alarm ve warning durumları gösterilecek
